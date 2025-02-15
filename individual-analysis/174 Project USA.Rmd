@@ -1,0 +1,345 @@
+---
+  title: "174 Project USA"
+author: "Quyen Le"
+date: "2023-03-06"
+output: html_document
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(forecast)
+library(UnitCircle)
+library(astsa)
+library(MASS) #to use the Box Cox transformation
+
+```
+
+## USA DATA
+
+##Preparing the data
+
+Reading in the data:
+
+```{r}
+usa_data <- read.csv("C:/Users/pbsbd/Desktop/174_proj/USA_INDEX.csv", header = TRUE, sep=',')
+usa_data$DATE = as.Date(usa_data$DATE)
+colnames(usa_data)[2] <- 'Index'
+
+#training data set - used to build model
+training_usa_data <- head(usa_data, -12)
+
+#testing data set - later used for forecasting
+testing_usa_data <- tail(usa_data, n=12) 
+```
+
+and start plotting it:
+```{r}
+#Converting data to time series variable
+usa_data_ts <- ts(training_usa_data[2], start=c(2000,01), frequency = 12)
+
+#Plotting the time series
+plot(usa_data_ts, main='U.S Consumer Price Index for All Items from 2000-01-01 to 2021-03-01', 
+     xlab='Year', 
+     ylab='CPI April 2020 = 100')
+abline(h=0)
+```
+
+Below is an attempt to stabilize variance through the Box Cox transformation. The resulting transformed data closely resembles a normal distribution, so we will be using the transformed data for modeling.
+
+```{r}
+usa_data_ts_trans <- ts(usa_data_ts + 700, start=c(2000,01), frequency = 12) #this is to ensure we can try Box Cox
+plot(usa_data_ts_trans) #all values are positive, let's try the box cox plot to see if we need to transform the data
+boxcox(lm(usa_data_ts_trans~1)) #could do a transformation of 3/2 or leave data alone
+hist(usa_data_ts_trans)
+qqnorm(usa_data_ts_trans, pch = 1, frame = FALSE)
+qqline(usa_data_ts_trans, col = "steelblue", lwd = 2)
+```
+
+Because the original data closely resembles a normal distribution, we will continue modeling the original data with no Box Cox transformation.
+
+
+##Checking for Stationarity of Transformed Data
+
+Checking for Seasonality:
+```{r}
+usa_data_components <- decompose(usa_data_ts) #of the training dataset
+plot(usa_data_components)
+```
+
+Isolating detrended and deseasonalized data (which is now stationary)
+and removing NA values:
+
+```{r}
+#there are some NA values, let's go ahead and remove them
+detrend_usa_data <- na.omit(usa_data_components$random) 
+plot(detrend_usa_data,
+     main='USA Stationary Transformed Dataset without NA Values')
+```
+
+
+##Analyzing the Detrended Data's ACF and PACF
+
+Analyzing detrended and deseasonalized data's ACF and PACF plots to determine possible model parameters:
+
+```{r}
+#ACF
+par(mar = c(4,4,3,1) + 0.1)
+acf_detrended_usa <- acf(detrend_usa_data, plot = TRUE, 
+                type = 'correlation', 
+                main = 'USA Detrended and Deseasonalized ACF Plot',
+                lag.max = 80)
+acf_detrended_usa
+                    
+#PACF
+par(mar = c(4,4,3,1) + 0.1)
+pacf_detrended_usa <- pacf(detrend_usa_data, plot = TRUE, 
+                  main = 'USA Detrended and Deseasonalized PACF Plot',
+                  lag.max = 80)
+pacf_detrended_usa
+```
+
+
+Here are our findings for the ARIMA model parameters from the ACF and the PACF:
+
+
+Non-seasonal part:
+AR - PACF plots - p value
+AR(1)
+AR(2)
+AR(3)
+AR(4)
+AR(5)
+AR(8)
+
+
+MA - ACF plots - q value
+AR(1)
+AR(2)
+AR(3)
+AR(4)
+AR(5)
+
+
+Seasonal part: 
+AR - PACF plots - P value
+AR(1) -> 12
+
+
+MA - ACF plots - Q value
+MA(1) -> 12
+
+
+Iterating through all possible model parameters:
+
+```{r}
+library(astsa)
+parameter_opt_usa = list(c(1,2,3,4,5,8), #p
+                     1, #d
+                     c(1,2,3,4,5), #q
+                     1, #P
+                     1, #D
+                     1) #Q
+parameter_combos_usa <- expand.grid(parameter_opt_usa)
+colnames(parameter_combos_usa) <- c('p', 'd', 'q', 'P', 'D', 'Q')
+
+for(x in 1:nrow(parameter_combos_usa)) {
+  current_arima <- NULL
+  try(current_arima <- arima(usa_data_ts, #need to use original data since this ARIMA model will detrend for you
+                             order = c(parameter_combos_usa$p[x], 
+                                       parameter_combos_usa$d[x], 
+                                       parameter_combos_usa$q[x]),
+                             seasonal = list(order = c(parameter_combos_usa$P[x], 
+                                                       parameter_combos_usa$D[x], 
+                                                       parameter_combos_usa$Q[x]),
+                                             period = 12),
+                                             method = 'ML'))
+  if(!is.null(current_arima) && !'try-error' %in% class(current_arima)) {
+    parameter_combos_usa$AIC[x] <- AIC(current_arima)
+  }
+}
+```
+
+
+##Fitting the Models
+
+After sorting the possible models based on AIC value (lowest to highest), I went down the sorted list to find models that were stationary and passed the following tests:
+
+1. Unit Root Test for Stationarity
+2. Portmanteau Tests for Autocorrelation
+3. Yule- Walker Test for White Noise in Residuals
+
+```{r}
+usa_lowest_AIC <- sort(parameter_combos_usa$AIC)[1:4] #4 lowest numbers
+which(parameter_combos_usa$AIC == usa_lowest_AIC[1]) #2, stationary
+which(parameter_combos_usa$AIC == usa_lowest_AIC[2]) #17, stationary
+which(parameter_combos_usa$AIC == usa_lowest_AIC[3]) #7
+which(parameter_combos_usa$AIC == usa_lowest_AIC[4]) #23, stationary
+```
+
+Testing Model 2:
+
+```{r}
+###MODEL 2###
+model_2 <- arima(usa_data_ts,
+     order = c(parameter_combos_usa$p[2], parameter_combos_usa$d[2], parameter_combos_usa$q[2]),
+     seasonal = list(order = c(parameter_combos_usa$P[2], parameter_combos_usa$D[2], parameter_combos_usa$Q[2]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 2 (model stationarity)
+roots_2 <- data.frame(uc.check(pol_ = c(1, 0.5290), print_output = FALSE, plot_output = FALSE))#AR1
+roots_2 <- rbind(roots_2,
+                  uc.check(pol_ = c(1, -0.2187), print_output = FALSE, plot_output = FALSE), #AR2
+                  uc.check(pol_ = c(1, -1.0000), print_output = FALSE, plot_output = FALSE), #MA1 FALSE
+                  uc.check(pol_ = c(1, -0.1106), print_output = FALSE, plot_output = FALSE), #SAR1
+                  uc.check(pol_ = c(1, -1.0000), print_output = FALSE, plot_output = FALSE)) #SMA1 FALSE
+roots_2 #this is a stationary model since AR values are all outside of the unit circle
+
+#getting model residuals
+residuals_2 <- model_2$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_2, lag = 15, fitdf = 5, type = c("Box-Pierce")) #pass
+Box.test(residuals_2, lag = 15, fitdf = 5, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_2, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+Testing Model 7:
+
+```{r}
+###MODEL 7###
+model_7 <- arima(usa_data_ts,
+     order = c(parameter_combos_usa$p[7], parameter_combos_usa$d[7], parameter_combos_usa$q[7]),
+     seasonal = list(order = c(parameter_combos_usa$P[7], parameter_combos_usa$D[7], parameter_combos_usa$Q[7]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 2 (model stationary)
+roots_7 <- data.frame(uc.check(pol_ = c(1, 0.1457), print_output = FALSE, plot_output = FALSE))#AR1
+roots_7 <- rbind(roots_7,
+                  uc.check(pol_ = c(1, -0.6147), print_output = FALSE, plot_output = FALSE), #MA1
+                  uc.check(pol_ = c(1, -0.3853), print_output = FALSE, plot_output = FALSE), #MA2
+                  uc.check(pol_ = c(1, -0.1183), print_output = FALSE, plot_output = FALSE), #SAR1
+                  uc.check(pol_ = c(1, -1.0000), print_output = FALSE, plot_output = FALSE))#SMA1 FALSE
+roots_7 #this is a stationary model since AR values are all outside of the unit circle
+
+#getting model residuals
+residuals_7 <- model_7$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_7, lag = 15, fitdf = 5, type = c("Box-Pierce")) #pass
+Box.test(residuals_7, lag = 15, fitdf = 5, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_7, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+Testing Model 23:
+
+```{r}
+###MODEL 23###
+model_23 <- arima(usa_data_ts,
+     order = c(parameter_combos_usa$p[23], parameter_combos_usa$d[23], parameter_combos_usa$q[23]),
+     seasonal = list(order = c(parameter_combos_usa$P[23], parameter_combos_usa$D[23], parameter_combos_usa$Q[23]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 2 (model stationary)
+roots_23 <- data.frame(uc.check(pol_ = c(1, -0.1824), print_output = FALSE, plot_output = FALSE))#AR1
+roots_23 <- rbind(roots_23,
+                  uc.check(pol_ = c(1, -0.8341), print_output = FALSE, plot_output = FALSE), #AR2
+                  uc.check(pol_ = c(1, -0.1881), print_output = FALSE, plot_output = FALSE), #AR3
+                  uc.check(pol_ = c(1, 0.0823), print_output = FALSE, plot_output = FALSE), #AR4
+                  uc.check(pol_ = c(1, -0.1898), print_output = FALSE, plot_output = FALSE), #AR5
+                  uc.check(pol_ = c(1, -0.2844), print_output = FALSE, plot_output = FALSE), #MA1
+                  uc.check(pol_ = c(1, 0.3201), print_output = FALSE, plot_output = FALSE), #MA2
+                  uc.check(pol_ = c(1, -0.4429), print_output = FALSE, plot_output = FALSE), #MA3
+                  uc.check(pol_ = c(1, -0.5927), print_output = FALSE, plot_output = FALSE),#MA4
+                  uc.check(pol_ = c(1, -0.0921), print_output = FALSE, plot_output = FALSE), #SAR1
+                  uc.check(pol_ = c(1, -1.0000), print_output = FALSE, plot_output = FALSE))#SMA1
+roots_23 #this is a stationary model since AR values are all outside of the unit circle
+
+#getting model residuals
+residuals_23 <- model_23$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_23, lag = 15, fitdf = 5, type = c("Box-Pierce")) #pass
+Box.test(residuals_23, lag = 15, fitdf = 5, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_23, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+
+##Forecasting the Test Data
+
+model 2, 7, and 23 are going to be good for forecasting, so let's go ahead and forecast the model.
+
+```{r}
+### MODEL 2 ###
+usa_data_ts_TEST <- ts(testing_usa_data[2], start=c(2021,04), frequency = 12)
+forecast_2_usa <- sarima.for(usa_data_ts, n.ahead = 12,
+                         p = 2, d = 1, q = 1, P = 1, D = 1, Q = 1, S = 12,
+                         main = "Forecasting of USA Testing Data, Model 2")
+lines(usa_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_2_usa_mse <- mean((usa_data_ts_TEST - forecast_2_usa$pred)**2)
+forecast_2_usa_mse #51310.41
+```
+
+```{r}
+### MODEL 7 ###
+usa_data_ts_TEST <- ts(testing_usa_data[2], start=c(2021,04), frequency = 12)
+forecast_7_usa <- sarima.for(usa_data_ts, n.ahead = 12,
+                         p = 1, d = 1, q = 2, P = 1, D = 1, Q = 1, S = 12,
+                         main = "Forecasting of USA Testing Data, Model 7")
+lines(usa_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_7_usa_mse <- mean((usa_data_ts_TEST - forecast_7_usa$pred)**2)
+forecast_7_usa_mse #50910.65
+```
+
+
+```{r}
+### MODEL 23 ###
+usa_data_ts_TEST <- ts(testing_usa_data[2], start=c(2021,04), frequency = 12)
+forecast_23_usa <- sarima.for(usa_data_ts, n.ahead = 12,
+                         p = 5, d = 1, q = 4, P = 1, D = 1, Q = 1, S = 12,
+                         main = "Forecasting of USA Testing Data, Model 23")
+lines(usa_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_23_usa_mse <- mean((usa_data_ts_TEST - forecast_23_usa$pred)**2)
+forecast_23_usa_mse #51122.5
+```
+
+model 7 is the best model to use to fit the USA CPI data.

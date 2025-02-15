@@ -1,0 +1,364 @@
+---
+title: "174 Project Russia"
+author: "Quyen Le"
+date: "2023-03-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(forecast) #forecasting
+library(UnitCircle) #unit root test
+library(astsa) #sarima modeling
+library(MASS) #Box Cox transformation
+
+
+```
+
+## RUSSIA DATA
+
+##Preparing the data
+
+Reading in the data:
+
+```{r}
+russia_data <- read.csv("C:/Users/pbsbd/Desktop/174_proj/RUSSIA_INDEX.csv", header = TRUE, sep=',')
+russia_data$DATE = as.Date(russia_data$DATE)
+colnames(russia_data)[2] <- 'Index'
+
+#training data set - used to build model
+training_russia_data <- head(russia_data, -12) 
+
+#testing data set - later used for forecasting
+testing_russia_data <- tail(russia_data, n=12)
+```
+
+Plotting the time series:
+
+```{r}
+#Converting data to time series variable
+russia_data_ts <- ts(training_russia_data[2], start=c(2000,01), frequency = 12)
+
+#Plotting the time series
+
+plot(russia_data_ts, main='Russia CPI for All Items from 2000-01-01 to 2021-03-01', 
+     xlab='Year', 
+     ylab='CPI April 2020 = 100')
+abline(h=0)
+```
+
+Below is an attempt to stabilize variance through the Box Cox transformation. The resulting transformed data closely resembles a normal distribution, so we will be using the transformed data for modeling.
+
+```{r}
+russia_data_ts_trans <- ts(russia_data_ts + 100, start=c(2000,01), frequency = 12) #shifting data up to apply Box Cox
+boxcox(lm(russia_data_ts_trans~1)) #log transformation
+title(main='Box Cox Plot to Identify Optimal Transformation')
+
+
+#Box Cox Transformation
+bc_russia_data_ts <- log(russia_data_ts_trans)
+
+#Checking if Box Cox was good
+plot(bc_russia_data_ts,
+     main = 'Box Cox Transformation of Russia CPI Data')
+hist(bc_russia_data_ts,
+     main = 'Histogram of Box Cox Transformation of Russia CPI Data')
+qqnorm(bc_russia_data_ts, pch = 1, frame = FALSE,
+       main = 'QQ Plot of Box Cox Transformation of Russia CPI Data')
+qqline(bc_russia_data_ts, col = "steelblue", lwd = 2)
+```
+
+
+##Checking for Stationarity of Transformed Data
+
+Checking for Seasonality:
+
+```{r}
+russia_data_components <- decompose(russia_data_ts) #of the training dataset
+plot(russia_data_components)
+```
+
+Isolating detrended and deseasonalized data (which is now stationary)
+and removing NA values:
+
+```{r}
+#there are some NA values, let's go ahead and remove them
+detrend_russia_data <- na.omit(russia_data_components$random) 
+plot(detrend_russia_data,
+     main='Russia Stationary Transformed Dataset without NA Values')
+```
+
+##Analyzing the Detrended Data's ACF and PACF
+
+Analyzing detrended and deseasonlized data's ACF and PACF plots to determine possible model parameters:
+
+```{r}
+#ACF
+par(mar = c(4,4,3,1) + 0.1)
+acf_detrended_russia <- acf(detrend_russia_data, plot = TRUE, 
+                type = 'correlation', 
+                main = 'Russia Detrended and Deseasonalized ACF Plot',
+                lag.max = 80)
+acf_detrended_russia
+
+#PACF 
+par(mar = c(4,4,3,1) + 0.1)
+pacf_detrended_russia <- pacf(detrend_russia_data, plot = TRUE, 
+                  main = 'Russia Detrended and Deseasonalized PACF Plot',
+                  lag.max = 80)
+pacf_detrended_russia
+```
+
+
+Here are our findings for the ARIMA model parameters from the ACF and the PACF:
+
+
+Non-seasonal part:
+AR - PACF plots - p value
+AR(1)
+AR(2)
+AR(3)
+AR(4)
+AR(5)
+AR(8)
+
+
+MA - ACF plots - q value
+AR(1)
+AR(3)
+AR(4)
+AR(5)
+AR(6)
+AR(9)
+
+
+Seasonal part: 
+AR - PACF plots - P value
+AR(0)
+
+
+MA - ACF plots - Q value
+MA(4) -> 12
+
+
+Iterating through all possible model parameters:
+
+```{r}
+library(astsa)
+parameter_opt_russia = list(c(1,2,3,4,5,8), #p
+                     1, #d
+                     c(1,3,4,5,6,9), #q
+                     0, #P
+                     1, #D
+                     4) #Q
+parameter_combos_russia <- expand.grid(parameter_opt_russia)
+colnames(parameter_combos_russia) <- c('p', 'd', 'q', 'P', 'D', 'Q')
+
+for(x in 1:nrow(parameter_combos_russia)) {
+  current_arima <- NULL
+  try(current_arima <- arima(bc_russia_data_ts, #transformed
+                             order = c(parameter_combos_russia$p[x], 
+                                       parameter_combos_russia$d[x], 
+                                       parameter_combos_russia$q[x]),
+                             seasonal = list(order = c(parameter_combos_russia$P[x], 
+                                                       parameter_combos_russia$D[x], 
+                                                       parameter_combos_russia$Q[x]),
+                                             period = 12),
+                                             method = 'ML'))
+  if(!is.null(current_arima) && !'try-error' %in% class(current_arima)) {
+    parameter_combos_russia$AIC[x] <- AIC(current_arima)
+  }
+}
+```
+
+##Fitting the Models
+
+After sorting the possible models based on AIC value (lowest to highest), I went down the sorted list to find models that were stationary and passed the following tests:
+
+1. Unit Root Test for Stationarity
+2. Portmanteau Tests for Autocorrelation
+3. Yule- Walker Test for White Noise in Residuals
+
+```{r}
+russia_lowest_AIC <- sort(parameter_combos_russia$AIC)[1:10] #4 lowest numbers
+which(parameter_combos_russia$AIC == russia_lowest_AIC[1])#1, STATIONARY
+which(parameter_combos_russia$AIC == russia_lowest_AIC[2])#20, STATIONARY 
+which(parameter_combos_russia$AIC == russia_lowest_AIC[3])#3, STATIONARY, error in forecasting 
+which(parameter_combos_russia$AIC == russia_lowest_AIC[4])#27, STATIONARY
+```
+Testing Model 1:
+
+```{r}
+###MODEL 1###
+model_1_russia <- arima(russia_data_ts,
+     order = c(parameter_combos_russia$p[1], parameter_combos_russia$d[1], parameter_combos_russia$q[1]),
+     seasonal = list(order = c(parameter_combos_russia$P[1], parameter_combos_russia$D[1], parameter_combos_russia$Q[1]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 1 (model stationarity)
+roots_1_russia <- data.frame(uc.check(pol_ = c(1, model_1_russia$coef[1]), print_output = FALSE, plot_output = FALSE))
+roots_1_russia <- rbind(roots_1_russia,
+                  uc.check(pol_ = c(1, model_1_russia$coef[2]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_1_russia$coef[3]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_1_russia$coef[4]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_1_russia$coef[5]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_1_russia$coef[6]), print_output = FALSE, plot_output = FALSE))
+roots_1_russia #this a stationary model since all AR values are outside of the unit circle
+
+#getting model residuals
+residuals_1_russia <- model_1_russia$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_1_russia, lag = 15, fitdf = 6, type = c("Box-Pierce")) #pass
+Box.test(residuals_1_russia, lag = 15, fitdf = 6, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_1_russia, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+
+Testing Model 20:
+
+```{r}
+###MODEL 20###
+model_20_russia <- arima(russia_data_ts,
+     order = c(parameter_combos_russia$p[20], parameter_combos_russia$d[20], parameter_combos_russia$q[20]),
+     seasonal = list(order = c(parameter_combos_russia$P[20], parameter_combos_russia$D[20], parameter_combos_russia$Q[20]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 20 (model stationarity)
+roots_20_russia <- data.frame(uc.check(pol_ = c(1, model_20_russia$coef[1]), print_output = FALSE, plot_output = FALSE))
+roots_20_russia <- rbind(roots_20_russia,
+                  uc.check(pol_ = c(1, model_20_russia$coef[2]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[3]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[4]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[5]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[6]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[7]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[8]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[9]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[10]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_20_russia$coef[11]), print_output = FALSE, plot_output = FALSE))
+roots_20_russia #this a stationary model since all AR values are outside of the unit circle
+
+#getting model residuals
+residuals_20_russia <- model_20_russia$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_20_russia, lag = 15, fitdf = 11, type = c("Box-Pierce")) #pass
+Box.test(residuals_20_russia, lag = 15, fitdf = 11, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_20_russia, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+Testing Model 3:
+
+```{r}
+###MODEL 3###
+model_3_russia <- arima(russia_data_ts,
+     order = c(parameter_combos_russia$p[3], parameter_combos_russia$d[3], parameter_combos_russia$q[3]),
+     seasonal = list(order = c(parameter_combos_russia$P[3], parameter_combos_russia$D[3], parameter_combos_russia$Q[3]),
+                     period = 12),
+                     method = 'ML')
+
+#unit root testing for model 3 (model stationarity)
+roots_3_russia <- data.frame(uc.check(pol_ = c(1, model_3_russia$coef[1]), print_output = FALSE, plot_output = FALSE))
+roots_3_russia <- rbind(roots_3_russia,
+                  uc.check(pol_ = c(1, model_3_russia$coef[2]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[3]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[4]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[5]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[6]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[7]), print_output = FALSE, plot_output = FALSE),
+                  uc.check(pol_ = c(1, model_3_russia$coef[8]), print_output = FALSE, plot_output = FALSE))
+roots_3_russia #this a stationary model since all AR values are outside of the unit circle
+
+#getting model residuals
+residuals_3_russia <- model_3_russia$residuals
+
+#testing model residuals
+
+#portmanteau tests (correlation)
+Box.test(residuals_3_russia, lag = 15, fitdf = 8, type = c("Box-Pierce")) #pass
+Box.test(residuals_3_russia, lag = 15, fitdf = 8, type = c("Ljung-Box")) #pass
+#thus, residuals have an autocorrelation of 0, which is good
+
+#yule walker tests (white noise)
+ar.yw(residuals_3_russia, aic = TRUE, order.max = NULL) 
+#order selected = 0, so none of the AR coefficients are significant, therefore the residuals are white noise
+```
+
+##Forecasting the Test Data
+
+Models 1, 20, 3 are ready for forecasting.
+
+Forecasting Model 1:
+
+```{r}
+### MODEL 1 ###
+russia_data_ts_TEST <- ts(testing_russia_data[2], start=c(2021,04), frequency = 12)
+forecast_1_russia <- sarima.for(russia_data_ts, n.ahead = 12,
+                         p = 1, d = 1, q = 1, P = 0, D = 1, Q = 4, S = 12,
+                         main = "Forecasting of Russia Testing Data, Model 1")
+lines(russia_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_1_russia_mse <- mean((russia_data_ts_TEST - forecast_1_russia$pred)**2)
+forecast_1_russia_mse #68754.09
+```
+
+Forecasting Model 20:
+
+```{r}
+### MODEL 20 ###
+russia_data_ts_TEST <- ts(testing_russia_data[2], start=c(2021,04), frequency = 12)
+forecast_20_russia <- sarima.for(russia_data_ts, n.ahead = 12,
+                         p = 2, d = 1, q = 5, P = 0, D = 1, Q = 4, S = 12,
+                         main = "Forecasting of Russia Testing Data, Model 20")
+lines(russia_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_20_russia_mse <- mean((russia_data_ts_TEST - forecast_20_russia$pred)**2)
+forecast_20_russia_mse #68193.34
+```
+
+Forecasting Model 3:
+
+```{r}
+### MODEL 3 ###
+russia_data_ts_TEST <- ts(testing_russia_data[2], start=c(2021,04), frequency = 12)
+forecast_3_russia <- sarima.for(russia_data_ts, n.ahead = 12,
+                         p = 3, d = 1, q = 1, P = 0, D = 1, Q = 4, S = 12,
+                         main = "Forecasting of Russia Testing Data, Model 3")
+lines(russia_data_ts_TEST, col = 'blue', type = 'l')
+legend(x = 'topleft',
+       legend = c('Actual', 'Forecasted'),
+       lty = c(1, 1),
+       col = c('blue', 'red'))
+
+#checking accuracy of model
+forecast_3_russia_mse <- mean((russia_data_ts_TEST - forecast_3_russia$pred)**2)
+forecast_3_russia_mse #68946.75
+```
+
+model 20 is the best model to use to fit the Russia CPI data.
