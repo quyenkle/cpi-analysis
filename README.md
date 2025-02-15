@@ -1,3 +1,5 @@
+This repo holds a time series analysis project I had completed in college where I explore my interests in international relations, economics, and public policy through an analytical, data focused lens.
+
 ### Executive Summary
 
 The fluctuations in the Consumer Price Index (CPI) has provided insight on the health of the
