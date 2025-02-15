@@ -1,6 +1,7 @@
+## A Comparison and Analysis of Consumer Price Index in Countries with Contrasting Government and Economic Structures
 This repo holds a time series analysis project I had completed in college where I explore my interests in international relations, economics, and public policy through an analytical, data focused lens.
 
-### Executive Summary
+#### Executive Summary
 
 The fluctuations in the Consumer Price Index (CPI) has provided insight on the health of the
 economy and the impact of government decisions on consumer purchasing power and demand. With the
@@ -20,5 +21,12 @@ economies, by default, are superior to command economies due to its values of fi
 independence. By comparing the differences in CPI, we can see in what ways increased financial planning
 excels at and where free market economies fall short...
 
+#### Data Sources
+For this analysis, I selected monthly CPI data from the United States, the United Kingdom, China, and
+Russia. The data taken from FRED is sourced from the Organization for Economic Cooperation and
+Development, who reports the CPI data following the ‘CPI release calendar of respective country’. The units of the data set are Indexes on a scale of 1 to 100, relative to the recent recession in April 2020. By setting all the data sets to these parameters, we can easily compare the different countries without much worry about currency exchange rates and reporting methods for the financial data.
+
+Additionally, this data has yet to be seasonalized, so the trends and patterns that we see are representative
+of the original data.
 
 The entire report can [be read here](https://drive.google.com/file/d/1_ipzsrCA5QalY7XEFLYEeIxbFnnrJ4kt/view?usp=sharing).
